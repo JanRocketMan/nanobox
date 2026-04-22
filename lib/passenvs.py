@@ -96,8 +96,11 @@ def main() -> int:
         return 0
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(json.dumps(result, indent=2) + "\n")
-    OUTPUT.chmod(0o600)
+    OUTPUT.parent.chmod(0o700)
+    fd = os.open(str(OUTPUT), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(result, f, indent=2)
+        f.write("\n")
 
     if result:
         print(f"wrote {len(result)} host(s) to {OUTPUT}", file=sys.stderr)

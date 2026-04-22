@@ -7,6 +7,7 @@ CONFIG_FILE="$CONFIG_DIR/config.yaml"
 CRED_TEMPLATE="$CONFIG_DIR/credentials.template.json"
 CRED_OUTPUT="$CONFIG_DIR/credentials.json"
 ADDON_SCRIPT="$NBOX_DIR/lib/inject_credentials.py"
+NBOX_RUNTIME="${XDG_RUNTIME_DIR:-/tmp/nbox-$(id -u)}"
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ ensure_ssh_agent() {
         fi
     fi
 
-    local agent_dir="/tmp/ssh-agent-$(whoami)"
+    local agent_dir="$NBOX_RUNTIME/ssh-agent"
     local agent_sock="$agent_dir/agent.sock"
 
     if [[ -S "$agent_sock" ]]; then
@@ -43,6 +44,7 @@ ensure_ssh_agent() {
         fi
     fi
 
+    [[ -L "$agent_dir" ]] && die "refusing to use symlink at $agent_dir"
     mkdir -p "$agent_dir"
     chmod 700 "$agent_dir"
     rm -f "$agent_sock"
@@ -231,9 +233,11 @@ EOF
     # ── Proxy auto-start ─────────────────────────────────────────────────────
 
     PROXY_ENABLED=0
-    local proxy_port=18080
+    local proxy_port=$(( 18080 + $(id -u) % 10000 ))
     local proxy_addr="127.0.0.1:$proxy_port"
-    local proxy_pid_file="/tmp/nbox-mitmdump.pid"
+    mkdir -p "$NBOX_RUNTIME" && chmod 700 "$NBOX_RUNTIME"
+    local proxy_pid_file="$NBOX_RUNTIME/mitmdump.pid"
+    local proxy_log_file="$NBOX_RUNTIME/mitmdump.log"
     local combined_ca="$HOME_DIR/.mitmproxy/combined-ca.pem"
 
     if [[ -f "$CRED_OUTPUT" && -s "$CRED_OUTPUT" ]]; then
@@ -252,7 +256,7 @@ EOF
                     --set confdir="$HOME_DIR/.mitmproxy" \
                     -s "$ADDON_SCRIPT" \
                     --quiet \
-                    &>/tmp/nbox-mitmdump.log &
+                    &>"$proxy_log_file" &
                 echo $! > "$proxy_pid_file"
                 echo "Started mitmdump proxy on $proxy_addr (PID: $!)" >&2
                 sleep 1
@@ -327,7 +331,7 @@ cmd_setup() {
     command -v bwrap &>/dev/null || die "bwrap not found. Install bubblewrap first."
     python3 -c "import yaml" 2>/dev/null || die "PyYAML not installed. Run: uv pip install pyyaml"
 
-    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR"
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cp "$NBOX_DIR/default-config.yaml" "$CONFIG_FILE"
         echo "Created config: $CONFIG_FILE" >&2
@@ -358,7 +362,7 @@ cmd_run() {
 }
 
 cmd_proxy() {
-    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR"
     if [[ ! -f "$CRED_TEMPLATE" ]]; then
         cat > "$CRED_TEMPLATE" <<'TMPL'
 {

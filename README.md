@@ -23,7 +23,7 @@ Designed for running AI coding agents (Claude Code, etc.) on shared machines whe
 ## Install
 
 ```bash
-git clone git@github.com:JanRocketMan/nanobox.git ~/nanobox
+git clone https://github.com/JanRocketMan/nanobox.git ~/nanobox
 echo "alias nbox='~/nanobox/nbox'" >> ~/.zshrc
 ```
 
@@ -124,31 +124,36 @@ env:
 | NVIDIA GPUs | Auto-detected, device nodes passed through |
 | Network | Shared with host (optionally proxied) |
 
-## Comparison with CubeSandbox
+## Comparison with alternatives
 
-[CubeSandbox](https://github.com/TencentCloud/CubeSandbox) is a KVM-based sandbox service from Tencent designed for AI agent code execution at scale. It's a fundamentally different tool solving a related problem — here's how they compare.
+There are several tools for sandboxing AI coding agents and general-purpose commands. Here's how they compare.
 
-|  | nanobox | CubeSandbox |
-|---|---|---|
-| **Isolation** | Linux user namespaces (bubblewrap) | KVM micro-VMs (dedicated guest kernel) |
-| **Root required** | No | Yes (KVM + systemd daemons) |
-| **Setup** | Single script + YAML config | Multi-service deployment (MySQL, Redis, CoreDNS, QEMU, etc.) |
-| **Cold start** | ~instant (no VM boot) | <60ms (snapshot cloning) |
-| **Memory overhead** | Near zero (namespace, no guest OS) | <5MB per instance (CoW + trimmed runtime) |
-| **GPU passthrough** | Yes (auto-detected NVIDIA) | Not documented |
-| **Credential injection** | mitmproxy-based (transparent HTTP header injection) | Environment variables |
-| **Network isolation** | Shared with host (optionally proxied) | Full eBPF-based per-sandbox network policies |
-| **Filesystem model** | Config-driven mount allow/deny lists with glob patterns | OCI image templates with writable layers |
-| **Secret masking** | `.env*` files masked at mount level | N/A (isolated VM, no host files exposed) |
-| **Target scale** | Single user on a shared machine | Thousands of concurrent agents per node |
-| **Platform** | Any Linux with user namespaces | x86_64 Linux with KVM (bare-metal or nested virt) |
-| **SDK/API** | CLI (`nbox run`) | E2B-compatible Python SDK + REST API |
+|  | nanobox | [nono](https://github.com/anthropics/nono) | [Claude Code sandbox](https://docs.anthropic.com/en/docs/claude-code/security) | [E2B](https://e2b.dev) | [Firejail](https://firejail.wordpress.com) | [CubeSandbox](https://github.com/TencentCloud/CubeSandbox) |
+|---|---|---|---|---|---|---|
+| **Isolation** | User namespaces (bwrap) | Landlock LSM / Seatbelt | bwrap / Seatbelt | Firecracker microVMs (KVM) | Namespaces + seccomp-BPF | KVM micro-VMs |
+| **Root required** | No | No | No | Yes (KVM) / N/A (cloud) | SUID binary | Yes (KVM + systemd) |
+| **Setup** | Single script + YAML | Single binary + profiles | Built-in (`/sandbox`) | `pip install e2b` + API key | Single binary, 900+ profiles | Multi-service deployment |
+| **Cold start** | ~instant | ~instant | ~instant | 125–180ms | ~instant | <60ms (snapshot cloning) |
+| **GPU passthrough** | Yes (auto-detect NVIDIA) | Not documented | Not documented | Partial | Manual, fragile | Not documented |
+| **Credential injection** | mitmproxy header injection | Phantom-token proxy | Custom proxy config (BYO) | Env vars (proxy in dev) | None | Environment variables |
+| **Network isolation** | Shared (optional proxy) | Proxy allowlist + Landlock TCP | Proxy with domain allowlist | VM-level + rate limiting | Namespace (`--net=none` or bridge) | eBPF per-sandbox policies |
+| **Filesystem model** | Mount allow/deny + globs | Capability allowlist (default-deny) | CWD rw + configurable paths | Isolated VM (snapshots) | Blacklist/whitelist + overlays | OCI images + writable layers |
+| **Secret masking** | `.env*` → `/dev/null` | Keys/creds blocked; phantom tokens | `denyRead`/`denyWrite` rules | N/A (VM isolation) | Blacklist via `disable-common.inc` | N/A (VM isolation) |
+| **Target scale** | Single developer | Developer to CI/K8s | Single dev / enterprise managed | Platform (millions concurrent) | Single-user desktop/server | Thousands per node |
+| **Platform** | Linux (user namespaces) | Linux 5.13+, macOS, WSL2 | macOS, Linux, WSL2 | Cloud / Linux + KVM | Linux 3.x+ | x86_64 Linux + KVM |
+| **SDK/API** | CLI (`nbox run`) | Rust lib + Python/TS/Go + CLI | npm package + CLI | Python/JS/Go SDKs + REST | CLI only | E2B-compatible SDK + REST |
 
-**When to use nanobox:** You're a developer running an AI agent (or any tool) on a shared machine and want lightweight filesystem isolation without infrastructure overhead. You want to control exactly which paths are visible, mask secrets, and optionally inject credentials — all from a single YAML config, no root needed.
+**When to use nanobox:** You're running an AI agent (or any command) on a shared Linux machine and want lightweight mount-driven isolation — control exactly which paths are visible, mask secrets, inject credentials via proxy — from a single YAML config with no root, no VMs, no infrastructure.
 
-**When to use CubeSandbox:** You're building a platform that runs untrusted code from many users at scale and need VM-level isolation with dedicated kernels, per-sandbox network policies, and an E2B-compatible SDK. You have the infrastructure to run KVM and the supporting services.
+**When to use nono:** You want cross-platform (Linux + macOS) kernel-level sandboxing with a default-deny security model and built-in credential proxying via phantom tokens. Stronger isolation guarantees than namespace-only approaches, but requires newer kernels for full features.
 
-In short: nanobox is a personal dev tool (single script, zero infrastructure), CubeSandbox is a platform service (multi-component, production-scale).
+**When to use Claude Code sandbox:** You're already using Claude Code and want one-command sandboxing (`/sandbox`) with managed domain allowlists and configurable filesystem permissions. No extra tooling needed.
+
+**When to use E2B:** You're building a platform that runs untrusted code from many users at scale and need full VM isolation with an SDK. Cloud-managed, so no infrastructure to maintain.
+
+**When to use Firejail:** You want to sandbox desktop applications or server processes on Linux with fine-grained seccomp + namespace controls. 900+ pre-built profiles for common apps. Not designed for AI agent workflows.
+
+**When to use CubeSandbox:** You need KVM-level isolation at platform scale with eBPF network policies and an E2B-compatible SDK, and you have the infrastructure to run KVM + supporting services.
 
 ## License
 
