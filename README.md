@@ -123,6 +123,32 @@ env:
 | NVIDIA GPUs | Auto-detected, device nodes passed through |
 | Network | Shared with host (optionally proxied) |
 
+## Comparison with CubeSandbox
+
+[CubeSandbox](https://github.com/TencentCloud/CubeSandbox) is a KVM-based sandbox service from Tencent designed for AI agent code execution at scale. It's a fundamentally different tool solving a related problem — here's how they compare.
+
+|  | nanobox | CubeSandbox |
+|---|---|---|
+| **Isolation** | Linux user namespaces (bubblewrap) | KVM micro-VMs (dedicated guest kernel) |
+| **Root required** | No | Yes (KVM + systemd daemons) |
+| **Setup** | Single script + YAML config | Multi-service deployment (MySQL, Redis, CoreDNS, QEMU, etc.) |
+| **Cold start** | ~instant (no VM boot) | <60ms (snapshot cloning) |
+| **Memory overhead** | Near zero (namespace, no guest OS) | <5MB per instance (CoW + trimmed runtime) |
+| **GPU passthrough** | Yes (auto-detected NVIDIA) | Not documented |
+| **Credential injection** | mitmproxy-based (transparent HTTP header injection) | Environment variables |
+| **Network isolation** | Shared with host (optionally proxied) | Full eBPF-based per-sandbox network policies |
+| **Filesystem model** | Config-driven mount allow/deny lists with glob patterns | OCI image templates with writable layers |
+| **Secret masking** | `.env*` files masked at mount level | N/A (isolated VM, no host files exposed) |
+| **Target scale** | Single user on a shared machine | Thousands of concurrent agents per node |
+| **Platform** | Any Linux with user namespaces | x86_64 Linux with KVM (bare-metal or nested virt) |
+| **SDK/API** | CLI (`nbox launch`) | E2B-compatible Python SDK + REST API |
+
+**When to use nanobox:** You're a developer running an AI agent (or any tool) on a shared machine and want lightweight filesystem isolation without infrastructure overhead. You want to control exactly which paths are visible, mask secrets, and optionally inject credentials — all from a single YAML config, no root needed.
+
+**When to use CubeSandbox:** You're building a platform that runs untrusted code from many users at scale and need VM-level isolation with dedicated kernels, per-sandbox network policies, and an E2B-compatible SDK. You have the infrastructure to run KVM and the supporting services.
+
+In short: nanobox is a personal dev tool (single script, zero infrastructure), CubeSandbox is a platform service (multi-component, production-scale).
+
 ## License
 
 MIT
