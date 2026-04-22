@@ -202,6 +202,30 @@ EOF
         done
         [[ -d /sys ]] && BWRAP_ARGS+=(--ro-bind /sys /sys)
         BWRAP_ARGS+=(--tmpfs /dev/shm)
+
+        # Bind-mount nvidia driver trees that live outside standard mounts
+        # (e.g. /cm/local/apps/cuda-driver/... on Bright Cluster Manager nodes)
+        local _nv_bin _nv_link _nv_real _nv_seen=" "
+        _nv_bin="$(command -v nvidia-smi 2>/dev/null || true)"
+        _nv_link="$(readlink "$_nv_bin" 2>/dev/null || true)"
+        _nv_real="$(readlink -f "$_nv_bin" 2>/dev/null || true)"
+        for _nv_path in "$_nv_link" "$_nv_real"; do
+            [[ -z "$_nv_path" || "$_nv_path" != /* ]] && continue
+            local _nv_top
+            _nv_top="/$(echo "${_nv_path#/}" | cut -d/ -f1)"
+            [[ "$_nv_seen" == *" $_nv_top "* ]] && continue
+            _nv_seen+="$_nv_top "
+            local _nv_covered=0
+            for dir in "${RO_DIRS[@]}"; do
+                case "$_nv_path" in "$dir"*) _nv_covered=1; break ;; esac
+            done
+            if (( ! _nv_covered )) && [[ -d "$_nv_top" ]]; then
+                BWRAP_ARGS+=(--ro-bind "$_nv_top" "$_nv_top")
+            fi
+        done
+
+        [[ -n "${LD_LIBRARY_PATH:-}" ]] && \
+            BWRAP_ARGS+=(--setenv LD_LIBRARY_PATH "$LD_LIBRARY_PATH")
     fi
 
     # ── Proxy auto-start ─────────────────────────────────────────────────────
