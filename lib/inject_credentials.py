@@ -22,7 +22,7 @@ class InjectCredentials:
     def __init__(self) -> None:
         if not MAPPING_FILE.exists():
             logger.warning("No credential mapping at %s — running in passthrough mode", MAPPING_FILE)
-            self.mapping: dict[str, dict[str, str]] = {}
+            self.mapping = {}
             return
 
         with open(MAPPING_FILE) as f:

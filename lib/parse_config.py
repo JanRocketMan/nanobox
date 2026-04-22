@@ -24,7 +24,7 @@ def is_pattern(path: str) -> bool:
     return not path.startswith("/") and not path.startswith("~")
 
 
-def bash_array(name: str, items: list[str]) -> str:
+def bash_array(name, items):
     escaped = [shlex.quote(item) for item in items]
     return f"{name}=({' '.join(escaped)})"
 
@@ -46,8 +46,8 @@ def main() -> int:
     env = config.get("env", {})
     path_dirs = config.get("path", [])
 
-    ro_dirs: list[str] = []
-    ro_patterns: list[str] = []
+    ro_dirs = []
+    ro_patterns = []
     for entry in mounts.get("read", []):
         if entry is None:
             continue
@@ -57,14 +57,14 @@ def main() -> int:
         else:
             ro_dirs.append(expand_home(entry))
 
-    rw_dirs: list[str] = []
+    rw_dirs = []
     for entry in mounts.get("write", []):
         if entry is None:
             continue
         rw_dirs.append(expand_home(str(entry)))
 
-    deny_patterns: list[str] = []
-    deny_negations: list[str] = []
+    deny_patterns = []
+    deny_negations = []
     for entry in mounts.get("deny", []):
         if entry is None:
             continue
@@ -74,21 +74,21 @@ def main() -> int:
         else:
             deny_patterns.append(entry)
 
-    env_forward: list[str] = []
+    env_forward = []
     for entry in env.get("forward", []):
         if entry is None:
             continue
         env_forward.append(str(entry))
 
-    env_set_keys: list[str] = []
-    env_set_vals: list[str] = []
+    env_set_keys = []
+    env_set_vals = []
     for key, val in env.get("set", {}).items():
         if val is None:
             continue
         env_set_keys.append(str(key))
         env_set_vals.append(expand_home(str(val)))
 
-    path_expanded: list[str] = []
+    path_expanded = []
     for entry in path_dirs:
         if entry is None:
             continue

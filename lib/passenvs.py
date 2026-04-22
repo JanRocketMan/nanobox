@@ -25,7 +25,7 @@ VAR_RE = re.compile(r"\$\{(\w+)}")
 ENV_LINE_RE = re.compile(r"^([A-Za-z_]\w*)=(.*)$")
 
 
-def load_env_file(path: Path, env: dict[str, str]) -> None:
+def load_env_file(path, env):
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -39,8 +39,8 @@ def load_env_file(path: Path, env: dict[str, str]) -> None:
         env[key] = val
 
 
-def substitute(value: str, env: dict[str, str]) -> tuple[str, list[str]]:
-    missing: list[str] = []
+def substitute(value, env):
+    missing = []
 
     def _replace(m: re.Match[str]) -> str:
         var = m.group(1)
@@ -58,7 +58,7 @@ def main() -> int:
     check_only = "--check" in args
     env_files = [Path(a) for a in args if a != "--check"]
 
-    env: dict[str, str] = dict(os.environ)
+    env = dict(os.environ)
     for ef in env_files:
         if not ef.exists():
             print(f"error: {ef} not found", file=sys.stderr)
@@ -71,13 +71,13 @@ def main() -> int:
         print("  Run 'nbox proxy' first to create it.", file=sys.stderr)
         return 1
 
-    template: dict[str, dict[str, str]] = json.loads(TEMPLATE.read_text())
+    template = json.loads(TEMPLATE.read_text())
 
-    result: dict[str, dict[str, str]] = {}
+    result = {}
     for host, headers in template.items():
         if host.startswith("_"):
             continue
-        resolved: dict[str, str] = {}
+        resolved = {}
         skip = False
         for header_name, header_value in headers.items():
             value, missing = substitute(header_value, env)
