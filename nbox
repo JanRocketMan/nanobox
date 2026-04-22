@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NBOX_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+CONFIG_DIR="$HOME/.config/nanobox"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
+CRED_TEMPLATE="$CONFIG_DIR/credentials.template.json"
+CRED_OUTPUT="$CONFIG_DIR/credentials.json"
+ADDON_SCRIPT="$NBOX_DIR/lib/inject_credentials.py"
+
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+
+_CLEANUP_FILES=()
+_cleanup() { rm -f "${_CLEANUP_FILES[@]+"${_CLEANUP_FILES[@]}"}"; }
+trap _cleanup EXIT
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+
+require_config() {
+    [[ -f "$CONFIG_FILE" ]] || die "config not found: $CONFIG_FILE
+  Run 'nbox setup' first."
+}
+
+# ── SSH agent ────────────────────────────────────────────────────────────────
+
+ensure_ssh_agent() {
+    if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+        if ssh-add -l &>/dev/null || [[ $? -eq 1 ]]; then
+            return 0
+        fi
+    fi
+
+    local agent_dir="/tmp/ssh-agent-$(whoami)"
+    local agent_sock="$agent_dir/agent.sock"
+
+    if [[ -S "$agent_sock" ]]; then
+        export SSH_AUTH_SOCK="$agent_sock"
+        if ssh-add -l &>/dev/null || [[ $? -eq 1 ]]; then
+            return 0
+        fi
+    fi
+
+    mkdir -p "$agent_dir"
+    chmod 700 "$agent_dir"
+    rm -f "$agent_sock"
+    eval "$(ssh-agent -a "$agent_sock" 2>/dev/null)"
+    export SSH_AUTH_SOCK="$agent_sock"
+    echo "Started ssh-agent (PID: $SSH_AGENT_PID)" >&2
+
+    for key in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_rsa" "$HOME/.ssh/id_ecdsa"; do
+        [[ -f "$key" ]] && ssh-add "$key" 2>/dev/null && echo "  Loaded $key" >&2 || true
+    done
+}
+
+# ── Config parsing ───────────────────────────────────────────────────────────
+
+parse_config() {
+    eval "$(python3 "$NBOX_DIR/lib/parse_config.py" "$CONFIG_FILE")"
+}
+
+# ── Build bwrap args ─────────────────────────────────────────────────────────
+
+build_bwrap() {
+    require_config
+    parse_config
+    ensure_ssh_agent
+
+    local HOME_DIR="$HOME"
+    local USER_NAME
+    USER_NAME="$(whoami)"
+    local PROJECT_DIR
+    PROJECT_DIR="$(realpath .)"
+
+    BWRAP_ARGS=()
+
+    # Namespaces and lifecycle
+    BWRAP_ARGS+=(--unshare-all --share-net --die-with-parent)
+
+    # Virtual filesystems
+    BWRAP_ARGS+=(--proc /proc --dev /dev --tmpfs /tmp)
+
+    # Home as empty tmpfs — everything else is selectively bound into it
+    BWRAP_ARGS+=(--tmpfs "$HOME_DIR")
+
+    # ── Read-only mounts (absolute paths from config) ────────────────────────
+
+    for dir in "${RO_DIRS[@]}"; do
+        [[ -e "$dir" ]] && BWRAP_ARGS+=(--ro-bind "$dir" "$dir")
+    done
+
+    # ── NSS fix: synthetic passwd + files-only nsswitch ──────────────────────
+
+    local sandbox_passwd sandbox_nsswitch
+    sandbox_passwd=$(mktemp /tmp/nbox-passwd.XXXXXX)
+    sandbox_nsswitch=$(mktemp /tmp/nbox-nsswitch.XXXXXX)
+    _CLEANUP_FILES+=("$sandbox_passwd" "$sandbox_nsswitch")
+
+    cp /etc/passwd "$sandbox_passwd" 2>/dev/null || true
+    if ! grep -q "^${USER_NAME}:" "$sandbox_passwd" 2>/dev/null; then
+        getent passwd "$USER_NAME" >> "$sandbox_passwd" 2>/dev/null || true
+    fi
+
+    cat > "$sandbox_nsswitch" <<'EOF'
+passwd:     files
+group:      files
+shadow:     files
+hosts:      files dns
+networks:   files
+protocols:  files
+services:   files
+EOF
+
+    BWRAP_ARGS+=(--ro-bind "$sandbox_passwd" /etc/passwd)
+    BWRAP_ARGS+=(--ro-bind "$sandbox_nsswitch" /etc/nsswitch.conf)
+
+    # ── DNS: follow resolv.conf symlink ──────────────────────────────────────
+
+    local resolv_real
+    resolv_real="$(readlink -f /etc/resolv.conf 2>/dev/null || true)"
+    if [[ -n "$resolv_real" && -f "$resolv_real" && "$resolv_real" != "/etc/resolv.conf" ]]; then
+        local parent acc=""
+        parent="$(dirname "$resolv_real")"
+        IFS='/' read -ra segs <<< "${parent#/}"
+        for seg in "${segs[@]}"; do
+            acc="$acc/$seg"
+            BWRAP_ARGS+=(--dir "$acc")
+        done
+        BWRAP_ARGS+=(--ro-bind "$resolv_real" "$resolv_real")
+    fi
+
+    # ── Read-write mounts (absolute paths from config) ───────────────────────
+    # Filter out ~/.ssh/* — handled separately below
+
+    for entry in "${RW_DIRS[@]}"; do
+        [[ "$entry" == "$HOME_DIR/.ssh"* ]] && continue
+        [[ -e "$entry" ]] && BWRAP_ARGS+=(--bind "$entry" "$entry")
+    done
+
+    # ── SSH: tmpfs base, config (ro copy), known_hosts (rw), agent socket ────
+
+    BWRAP_ARGS+=(--tmpfs "$HOME_DIR/.ssh")
+
+    if [[ -f "$HOME_DIR/.ssh/config" ]]; then
+        local sandbox_ssh_config
+        sandbox_ssh_config=$(mktemp /tmp/nbox-sshcfg.XXXXXX)
+        cp "$HOME_DIR/.ssh/config" "$sandbox_ssh_config"
+        chmod 600 "$sandbox_ssh_config"
+        _CLEANUP_FILES+=("$sandbox_ssh_config")
+        BWRAP_ARGS+=(--ro-bind "$sandbox_ssh_config" "$HOME_DIR/.ssh/config")
+    fi
+
+    if [[ -f "$HOME_DIR/.ssh/known_hosts" ]]; then
+        BWRAP_ARGS+=(--bind "$HOME_DIR/.ssh/known_hosts" "$HOME_DIR/.ssh/known_hosts")
+    fi
+
+    if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
+        BWRAP_ARGS+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
+    fi
+
+    # ── Project directory (rw, implicit) ─────────────────────────────────────
+
+    BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
+
+    # ── Read-only overlays (glob patterns matched in project dir) ────────────
+
+    shopt -s dotglob nullglob
+
+    for pattern in "${RO_PATTERNS[@]}"; do
+        for match in "$PROJECT_DIR"/$pattern; do
+            [[ -e "$match" ]] && BWRAP_ARGS+=(--ro-bind "$match" "$match")
+        done
+    done
+
+    # ── Deny patterns (mask with /dev/null) ──────────────────────────────────
+
+    for pattern in "${DENY_PATTERNS[@]}"; do
+        for match in "$PROJECT_DIR"/$pattern; do
+            if [[ -f "$match" ]]; then
+                local basename denied=1
+                basename="$(basename "$match")"
+                for neg in "${DENY_NEGATIONS[@]}"; do
+                    # shellcheck disable=SC2254
+                    case "$basename" in
+                        $neg) denied=0; break ;;
+                    esac
+                done
+                (( denied )) && BWRAP_ARGS+=(--ro-bind /dev/null "$match")
+            fi
+        done
+    done
+
+    shopt -u dotglob nullglob
+
+    # ── GPU passthrough (auto-detected) ──────────────────────────────────────
+
+    if [[ -c /dev/nvidiactl ]]; then
+        for dev in /dev/nvidia* /dev/dri/*; do
+            [[ -e "$dev" ]] && BWRAP_ARGS+=(--dev-bind "$dev" "$dev")
+        done
+        [[ -d /sys ]] && BWRAP_ARGS+=(--ro-bind /sys /sys)
+        BWRAP_ARGS+=(--tmpfs /dev/shm)
+    fi
+
+    # ── Proxy auto-start ─────────────────────────────────────────────────────
+
+    PROXY_ENABLED=0
+    local proxy_port=18080
+    local proxy_addr="127.0.0.1:$proxy_port"
+    local proxy_pid_file="/tmp/nbox-mitmdump.pid"
+    local combined_ca="$HOME_DIR/.mitmproxy/combined-ca.pem"
+
+    if [[ -f "$CRED_OUTPUT" && -s "$CRED_OUTPUT" ]]; then
+        if ! command -v mitmdump &>/dev/null; then
+            warn "$CRED_OUTPUT found but mitmdump not installed (uv tool install mitmproxy)"
+        elif [[ ! -f "$combined_ca" ]]; then
+            warn "$CRED_OUTPUT found but combined CA missing: $combined_ca"
+        else
+            PROXY_ENABLED=1
+            if [[ -f "$proxy_pid_file" ]] && kill -0 "$(cat "$proxy_pid_file")" 2>/dev/null; then
+                echo "Proxy already running (PID: $(cat "$proxy_pid_file"))" >&2
+            else
+                mitmdump \
+                    --listen-host 127.0.0.1 \
+                    --listen-port "$proxy_port" \
+                    --set confdir="$HOME_DIR/.mitmproxy" \
+                    -s "$ADDON_SCRIPT" \
+                    --quiet \
+                    &>/tmp/nbox-mitmdump.log &
+                echo $! > "$proxy_pid_file"
+                echo "Started mitmdump proxy on $proxy_addr (PID: $!)" >&2
+                sleep 1
+            fi
+        fi
+    fi
+
+    # ── Environment: PATH ────────────────────────────────────────────────────
+
+    local sandbox_path=""
+    for p in "${SANDBOX_PATH_DIRS[@]}"; do
+        sandbox_path="${sandbox_path:+$sandbox_path:}$p"
+    done
+
+    BWRAP_ARGS+=(--setenv NBOX 1
+                 --setenv HOME "$HOME_DIR"
+                 --setenv USER "$USER_NAME"
+                 --setenv PATH "$sandbox_path")
+
+    # ── Environment: explicit set from config ────────────────────────────────
+
+    for i in "${!ENV_SET_KEYS[@]}"; do
+        BWRAP_ARGS+=(--setenv "${ENV_SET_KEYS[$i]}" "${ENV_SET_VALS[$i]}")
+    done
+
+    # ── Environment: forward from host ───────────────────────────────────────
+
+    for pattern in "${ENV_FORWARD[@]}"; do
+        if [[ "$pattern" == *'*'* ]]; then
+            while IFS='=' read -r var _; do
+                # shellcheck disable=SC2254
+                case "$var" in
+                    $pattern) BWRAP_ARGS+=(--setenv "$var" "${!var}") ;;
+                esac
+            done < <(env)
+        else
+            [[ -n "${!pattern:-}" ]] && BWRAP_ARGS+=(--setenv "$pattern" "${!pattern}")
+        fi
+    done
+
+    # ── Environment: SSH ─────────────────────────────────────────────────────
+
+    BWRAP_ARGS+=(--setenv GIT_SSH_COMMAND "ssh -F $HOME_DIR/.ssh/config")
+
+    # ── Environment: jj identity ─────────────────────────────────────────────
+
+    local jj_user="${JJ_USER:-$(jj config get user.name 2>/dev/null || true)}"
+    local jj_email="${JJ_EMAIL:-$(jj config get user.email 2>/dev/null || true)}"
+    [[ -n "$jj_user" ]]  && BWRAP_ARGS+=(--setenv JJ_USER "$jj_user")
+    [[ -n "$jj_email" ]] && BWRAP_ARGS+=(--setenv JJ_EMAIL "$jj_email")
+
+    # ── Environment: proxy ───────────────────────────────────────────────────
+
+    if (( PROXY_ENABLED )); then
+        BWRAP_ARGS+=(--ro-bind "$combined_ca" "$combined_ca")
+        BWRAP_ARGS+=(--setenv HTTP_PROXY "http://$proxy_addr")
+        BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://$proxy_addr")
+        BWRAP_ARGS+=(--setenv SSL_CERT_FILE "$combined_ca")
+        BWRAP_ARGS+=(--setenv REQUESTS_CA_BUNDLE "$combined_ca")
+        BWRAP_ARGS+=(--setenv CURL_CA_BUNDLE "$combined_ca")
+        BWRAP_ARGS+=(--setenv NODE_EXTRA_CA_CERTS "$combined_ca")
+    fi
+
+    # ── Working directory ────────────────────────────────────────────────────
+
+    BWRAP_ARGS+=(--chdir "$PROJECT_DIR")
+}
+
+# ── Subcommands ──────────────────────────────────────────────────────────────
+
+cmd_setup() {
+    command -v bwrap &>/dev/null || die "bwrap not found. Install bubblewrap first."
+    python3 -c "import yaml" 2>/dev/null || die "PyYAML not installed. Run: uv pip install pyyaml"
+
+    mkdir -p "$CONFIG_DIR"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cp "$NBOX_DIR/default-config.yaml" "$CONFIG_FILE"
+        echo "Created config: $CONFIG_FILE" >&2
+    else
+        echo "Config already exists: $CONFIG_FILE" >&2
+    fi
+
+    "${EDITOR:-vim}" "$CONFIG_FILE"
+}
+
+cmd_status() {
+    build_bwrap
+    local bwrap_bin
+    bwrap_bin="$(command -v bwrap)"
+    echo "$bwrap_bin --clearenv \\"
+    for arg in "${BWRAP_ARGS[@]}"; do
+        printf '  %q \\\n' "$arg"
+    done
+    echo "  -- <command> [args...]"
+}
+
+cmd_launch() {
+    [[ $# -ge 1 ]] || die "usage: nbox launch <command> [args...]"
+    build_bwrap
+    local bwrap_bin
+    bwrap_bin="$(command -v bwrap)"
+    exec "$bwrap_bin" --clearenv "${BWRAP_ARGS[@]}" -- "$@"
+}
+
+cmd_proxy() {
+    mkdir -p "$CONFIG_DIR"
+    if [[ ! -f "$CRED_TEMPLATE" ]]; then
+        cat > "$CRED_TEMPLATE" <<'TMPL'
+{
+  "_comment": "Template for nbox passenvs. ${VAR} placeholders are resolved from env vars.",
+  "example-api.yourcompany.com": {
+    "Authorization": "Bearer ${API_TOKEN}"
+  }
+}
+TMPL
+        echo "Created template: $CRED_TEMPLATE" >&2
+    fi
+
+    "${EDITOR:-vim}" "$CRED_TEMPLATE"
+
+    echo "" >&2
+    echo "To generate credentials from this template, run:" >&2
+    echo "  nbox passenvs [.env files...]" >&2
+}
+
+cmd_passenvs() {
+    python3 "$NBOX_DIR/lib/passenvs.py" "$@"
+}
+
+# ── Main dispatch ────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    setup)    shift; cmd_setup "$@" ;;
+    status)   shift; cmd_status "$@" ;;
+    launch)   shift; cmd_launch "$@" ;;
+    proxy)    shift; cmd_proxy "$@" ;;
+    passenvs) shift; cmd_passenvs "$@" ;;
+    *)        die "usage: nbox {setup|status|launch|proxy|passenvs} [args...]" ;;
+esac

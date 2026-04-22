@@ -1,0 +1,87 @@
+# nanobox sandbox configuration
+# Edit this file to customize your sandbox environment.
+# Run 'nbox status' to preview the resulting bwrap command.
+#
+# Path syntax:
+#   /absolute/path  — mounted directly
+#   ~/relative      — expanded to $HOME/relative
+#   "~"             — expanded to $HOME (quote to avoid YAML null)
+#
+# Glob patterns (entries not starting with / or ~):
+#   In 'read':  matched against project directory entries, forced read-only
+#   In 'deny':  matched against project directory file basenames, masked with /dev/null
+#   Prefix with ! to negate a deny pattern
+
+mounts:
+  # Read-only mounts: system directories and tools
+  read:
+    - /usr
+    - /lib
+    - /lib64
+    - /bin
+    - /sbin
+    - /etc
+    - ~/.local/bin
+    - ~/.local/gcc-11
+    - ~/.local/share/uv
+    - ~/.config/uv
+    - ~/.config/nvim
+    - ~/.config/jj
+    - ~/.config/glab-cli
+    - ~/ripgrep-14.1.0-x86_64-unknown-linux-musl
+    - ~/fd-v10.1.0-x86_64-unknown-linux-musl
+    - ~/nvim-linux64
+    - ~/jj
+    - ~/dotfiles
+    # Glob: force .venv directories read-only within the project
+    - ".venv*"
+
+  # Read-write mounts (project directory is always rw implicitly)
+  write:
+    - ~/.local/share/claude
+    - ~/.claude
+    - ~/.claude.json
+    - ~/.cache
+
+  # Deny patterns: mask matching files in the project directory with /dev/null
+  deny:
+    - ".env*"
+    - "!*.example"
+
+# PATH inside the sandbox (in order)
+path:
+  - ~/.local/bin
+  - ~/ripgrep-14.1.0-x86_64-unknown-linux-musl
+  - ~/fd-v10.1.0-x86_64-unknown-linux-musl
+  - ~/nvim-linux64/bin
+  - ~/.local/gcc-11/bin
+  - "~"
+  - /usr/local/sbin
+  - /usr/local/bin
+  - /usr/sbin
+  - /usr/bin
+  - /sbin
+  - /bin
+
+# Environment variables
+env:
+  # Forward from host (supports glob patterns like CUDA_*)
+  forward:
+    - TERM
+    - LANG
+    - LC_ALL
+    - ANTHROPIC_API_KEY
+    - CLAUDE_CODE_NO_FLICKER
+    - SSH_AUTH_SOCK
+    - GITLAB_REMOTE_PROJECT
+    - "CUDA_*"
+    - "NCCL_*"
+    - "TORCH_*"
+    - "NVIDIA_*"
+    - "CUDNN_*"
+
+  # Set explicitly inside the sandbox
+  set:
+    SHELL: /bin/bash
+    TORCHINDUCTOR_CACHE_DIR: ~/.cache/torch/inductor
+    TRITON_CACHE_DIR: ~/.cache/triton
