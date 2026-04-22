@@ -4,6 +4,13 @@ Agent-agnostic sandbox that combines [bubblewrap](https://github.com/containers/
 
 Designed for running AI coding agents (Claude Code, etc.) on shared machines where unrestricted shell access is risky — but works for any command you want to isolate.
 
+## Requirements
+
+- **bubblewrap (bwrap) >= 0.5.0** — needed for `--clearenv` support
+- **User namespaces enabled** — verify with `unshare --user true` (if it fails, ask your sysadmin to set `kernel.unprivileged_userns_clone=1`)
+- **python3 + PyYAML**
+- **mitmproxy** (optional, for credential injection)
+
 ## What it does
 
 - Mounts system dirs read-only, gives the project directory read-write access
@@ -16,12 +23,6 @@ Designed for running AI coding agents (Claude Code, etc.) on shared machines whe
 ## Install
 
 ```bash
-# Dependencies
-# - bwrap (bubblewrap) >= 0.9.0
-# - python3 + PyYAML
-# - mitmproxy (optional, for credential injection)
-
-# Clone and alias
 git clone git@github.com:JanRocketMan/nanobox.git ~/nanobox
 echo "alias nbox='~/nanobox/nbox'" >> ~/.zshrc
 ```
@@ -36,9 +37,9 @@ nbox setup
 nbox status
 
 # Run any command inside the sandbox
-nbox launch /bin/bash
-nbox launch claude
-nbox launch claude --resume
+nbox run /bin/bash
+nbox run claude
+nbox run claude --resume
 ```
 
 ## Commands
@@ -47,14 +48,14 @@ nbox launch claude --resume
 
 Creates `~/.config/nanobox/config.yaml` from the default template and opens it in your editor. Checks that `bwrap` and `PyYAML` are installed.
 
-### `nbox launch <command> [args...]`
+### `nbox run <command> [args...]`
 
 Runs `<command>` inside the sandbox. The current directory is mounted read-write as the project directory. All arguments after the command name are passed through.
 
 ```bash
-nbox launch claude --resume          # resume a Claude session
-nbox launch /bin/bash                # debug the sandbox interactively
-nbox launch python train.py --lr 1e-4
+nbox run claude --resume          # resume a Claude session
+nbox run /bin/bash                # debug the sandbox interactively
+nbox run python train.py --lr 1e-4
 ```
 
 ### `nbox status`
@@ -65,14 +66,14 @@ Prints the full `bwrap` command that would be executed, without running it. Usef
 
 Creates or opens `~/.config/nanobox/credentials.template.json` for editing. This template maps hostnames to HTTP headers with `${VAR}` placeholders.
 
-### `nbox passenvs [.env files...]`
+### `nbox resolve [.env files...]`
 
-Resolves `${VAR}` placeholders in the credentials template using environment variables (and optional `.env` files), writes the result to `credentials.json`. The proxy auto-starts on `nbox launch` when credentials are present.
+Resolves `${VAR}` placeholders in the credentials template using environment variables (and optional `.env` files), writes the result to `credentials.json`. The proxy auto-starts on `nbox run` when credentials are present.
 
 ```bash
-nbox passenvs                    # resolve from current env
-nbox passenvs .env .env.prod     # layer .env files (later wins)
-nbox passenvs --check .env       # dry-run
+nbox resolve                    # resolve from current env
+nbox resolve .env .env.prod     # layer .env files (later wins)
+nbox resolve --check .env       # dry-run
 ```
 
 ## Config format
@@ -141,7 +142,7 @@ env:
 | **Secret masking** | `.env*` files masked at mount level | N/A (isolated VM, no host files exposed) |
 | **Target scale** | Single user on a shared machine | Thousands of concurrent agents per node |
 | **Platform** | Any Linux with user namespaces | x86_64 Linux with KVM (bare-metal or nested virt) |
-| **SDK/API** | CLI (`nbox launch`) | E2B-compatible Python SDK + REST API |
+| **SDK/API** | CLI (`nbox run`) | E2B-compatible Python SDK + REST API |
 
 **When to use nanobox:** You're a developer running an AI agent (or any tool) on a shared machine and want lightweight filesystem isolation without infrastructure overhead. You want to control exactly which paths are visible, mask secrets, and optionally inject credentials — all from a single YAML config, no root needed.
 

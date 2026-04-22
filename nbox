@@ -325,8 +325,8 @@ cmd_status() {
     echo "  -- <command> [args...]"
 }
 
-cmd_launch() {
-    [[ $# -ge 1 ]] || die "usage: nbox launch <command> [args...]"
+cmd_run() {
+    [[ $# -ge 1 ]] || die "usage: nbox run <command> [args...]"
     build_bwrap
     local bwrap_bin
     bwrap_bin="$(command -v bwrap)"
@@ -351,20 +351,20 @@ TMPL
 
     echo "" >&2
     echo "To generate credentials from this template, run:" >&2
-    echo "  nbox passenvs [.env files...]" >&2
+    echo "  nbox resolve [.env files...]" >&2
 }
 
-cmd_passenvs() {
+cmd_resolve() {
     python3 "$NBOX_DIR/lib/passenvs.py" "$@"
 }
 
 # ── Main dispatch ────────────────────────────────────────────────────────────
 
 case "${1:-}" in
-    setup)    shift; cmd_setup "$@" ;;
-    status)   shift; cmd_status "$@" ;;
-    launch)   shift; cmd_launch "$@" ;;
-    proxy)    shift; cmd_proxy "$@" ;;
-    passenvs) shift; cmd_passenvs "$@" ;;
-    *)        die "usage: nbox {setup|status|launch|proxy|passenvs} [args...]" ;;
+    setup)   shift; cmd_setup "$@" ;;
+    status)  shift; cmd_status "$@" ;;
+    run)     shift; cmd_run "$@" ;;
+    proxy)   shift; cmd_proxy "$@" ;;
+    resolve) shift; cmd_resolve "$@" ;;
+    *)       die "usage: nbox {setup|status|run|proxy|resolve} [args...]" ;;
 esac
