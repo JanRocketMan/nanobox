@@ -311,7 +311,7 @@ cmd_setup() {
         echo "Config already exists: $CONFIG_FILE" >&2
     fi
 
-    "${EDITOR:-vim}" "$CONFIG_FILE"
+    ${EDITOR:-vim} "$CONFIG_FILE"
 }
 
 cmd_status() {
@@ -347,7 +347,7 @@ TMPL
         echo "Created template: $CRED_TEMPLATE" >&2
     fi
 
-    "${EDITOR:-vim}" "$CRED_TEMPLATE"
+    ${EDITOR:-vim} "$CRED_TEMPLATE"
 
     echo "" >&2
     echo "To generate credentials from this template, run:" >&2
