@@ -31,10 +31,18 @@ class InjectCredentials:
         logger.info("Loaded credential mappings for %d host(s)", len(self.mapping))
 
     def request(self, flow: http.HTTPFlow) -> None:
+        # Strip leading/trailing whitespace from header values — HTTP/2
+        # (RFC 9113 s8.2.1) forbids it, and tools sometimes write tokens
+        # with trailing spaces (e.g. glab's config.yml).
+        for name, value in list(flow.request.headers.items(True)):
+            stripped = value.strip()
+            if stripped != value:
+                flow.request.headers[name] = stripped
+
         host = flow.request.pretty_host
         if host in self.mapping:
             for header_name, header_value in self.mapping[host].items():
-                flow.request.headers[header_name] = header_value
+                flow.request.headers[header_name] = header_value.strip()
 
 
 addons = [InjectCredentials()]
