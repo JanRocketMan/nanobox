@@ -48,19 +48,20 @@ nbox run claude --resume
 
 Creates `~/.config/nanobox/config.yaml` from the default template and opens it in your editor. Checks that `bwrap` and `PyYAML` are installed.
 
-### `nbox run <command> [args...]`
+### `nbox run [--extra-dir DIR]... <command> [args...]`
 
-Runs `<command>` inside the sandbox. The current directory is mounted read-write as the project directory. All arguments after the command name are passed through.
+Runs `<command>` inside the sandbox. The current directory is mounted read-write as the project directory. Use `--extra-dir` to mount additional directories with the same sandbox rules (rw access, `.venv*` read-only, `.env*` masked). All arguments after the command name are passed through.
 
 ```bash
 nbox run claude --resume          # resume a Claude session
 nbox run /bin/bash                # debug the sandbox interactively
 nbox run python train.py --lr 1e-4
+nbox run --extra-dir ~/other-repo claude   # mount an extra directory
 ```
 
-### `nbox status`
+### `nbox status [--extra-dir DIR]...`
 
-Prints the full `bwrap` command that would be executed, without running it. Useful for debugging mount configuration.
+Prints the full `bwrap` command that would be executed, without running it. Useful for debugging mount configuration. Accepts the same `--extra-dir` flags as `run`.
 
 ### `nbox proxy`
 
@@ -115,7 +116,7 @@ env:
 
 | Resource | Access |
 |---|---|
-| Project directory | Read-write |
+| Project directory (+ extra dirs) | Read-write |
 | `.venv*` in project | Read-only overlay |
 | `.env*` in project | Masked (`/dev/null`) |
 | System (`/usr`, `/bin`, `/etc`) | Read-only |

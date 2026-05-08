@@ -9,7 +9,7 @@ nanobox is a single-script Linux sandbox that wraps bubblewrap (`bwrap`) and opt
 ## Project layout
 
 ```
-nbox                           # Main bash CLI (~395 lines) — all orchestration logic
+nbox                           # Main bash CLI (~440 lines) - all orchestration logic
 lib/
   parse_config.py              # YAML config → bash-evaluable arrays (eval'd by nbox)
   passenvs.py                  # ${VAR} template resolver → credentials.json
@@ -22,11 +22,12 @@ No build system, no package manager, no tests. The deliverable is the `nbox` bas
 ## How to run
 
 ```bash
-./nbox setup                   # creates config, checks deps (bwrap, PyYAML)
-./nbox run /bin/bash           # run a command inside the sandbox
-./nbox status                  # preview the full bwrap invocation without executing
-./nbox proxy                   # create/edit credentials template
-./nbox resolve [.env files]    # resolve template → credentials.json
+./nbox setup                              # creates config, checks deps (bwrap, PyYAML)
+./nbox run /bin/bash                      # run a command inside the sandbox
+./nbox run --extra-dir ~/other claude     # mount additional directories
+./nbox status                             # preview the full bwrap invocation
+./nbox proxy                              # create/edit credentials template
+./nbox resolve [.env files]               # resolve template -> credentials.json
 ```
 
 ## Architecture
@@ -38,7 +39,7 @@ The execution flow for `nbox run` is:
 3. If `credentials.json` exists, mitmdump starts as a background proxy with `inject_credentials.py` as its addon
 4. `exec bwrap --clearenv [args] -- <command>` replaces the shell
 
-The mount layering order matters: tmpfs home → ro system dirs → rw user dirs → rw project dir → ro overlays (`.venv*`) → deny masks (`.env*` → `/dev/null`). Later mounts override earlier ones for the same path.
+The mount layering order matters: tmpfs home -> ro system dirs -> rw user dirs -> rw project dir (+ extra dirs) -> ro overlays (`.venv*`) -> deny masks (`.env*` -> `/dev/null`). Later mounts override earlier ones for the same path. Extra dirs passed via `--extra-dir` receive the same treatment as the project dir (rw bind + ro overlays + deny masks).
 
 ## Config ↔ bash array mapping
 

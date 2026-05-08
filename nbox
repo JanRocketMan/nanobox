@@ -77,6 +77,7 @@ build_bwrap() {
     PROJECT_DIR="$(realpath .)"
 
     BWRAP_ARGS=()
+    local -a EXTRA_DIRS=("${NBOX_EXTRA_DIRS[@]+"${NBOX_EXTRA_DIRS[@]}"}")
 
     # Namespaces and lifecycle
     BWRAP_ARGS+=(--unshare-all --share-net --die-with-parent)
@@ -162,35 +163,42 @@ EOF
         BWRAP_ARGS+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
     fi
 
-    # ── Project directory (rw, implicit) ─────────────────────────────────────
+    # ── Project + extra directories (rw) ────────────────────────────────────
 
-    BWRAP_ARGS+=(--bind "$PROJECT_DIR" "$PROJECT_DIR")
+    local -a ALL_PROJECT_DIRS=("$PROJECT_DIR" "${EXTRA_DIRS[@]}")
+    for _dir in "${ALL_PROJECT_DIRS[@]}"; do
+        BWRAP_ARGS+=(--bind "$_dir" "$_dir")
+    done
 
-    # ── Read-only overlays (glob patterns matched in project dir) ────────────
+    # ── Read-only overlays (glob patterns matched in each project dir) ───────
 
     shopt -s dotglob nullglob
 
-    for pattern in "${RO_PATTERNS[@]}"; do
-        for match in "$PROJECT_DIR"/$pattern; do
-            [[ -e "$match" ]] && BWRAP_ARGS+=(--ro-bind "$match" "$match")
+    for _dir in "${ALL_PROJECT_DIRS[@]}"; do
+        for pattern in "${RO_PATTERNS[@]}"; do
+            for match in "$_dir"/$pattern; do
+                [[ -e "$match" ]] && BWRAP_ARGS+=(--ro-bind "$match" "$match")
+            done
         done
     done
 
     # ── Deny patterns (mask with /dev/null) ──────────────────────────────────
 
-    for pattern in "${DENY_PATTERNS[@]}"; do
-        for match in "$PROJECT_DIR"/$pattern; do
-            if [[ -f "$match" ]]; then
-                local basename denied=1
-                basename="$(basename "$match")"
-                for neg in "${DENY_NEGATIONS[@]}"; do
-                    # shellcheck disable=SC2254
-                    case "$basename" in
-                        $neg) denied=0; break ;;
-                    esac
-                done
-                (( denied )) && BWRAP_ARGS+=(--ro-bind /dev/null "$match")
-            fi
+    for _dir in "${ALL_PROJECT_DIRS[@]}"; do
+        for pattern in "${DENY_PATTERNS[@]}"; do
+            for match in "$_dir"/$pattern; do
+                if [[ -f "$match" ]]; then
+                    local basename denied=1
+                    basename="$(basename "$match")"
+                    for neg in "${DENY_NEGATIONS[@]}"; do
+                        # shellcheck disable=SC2254
+                        case "$basename" in
+                            $neg) denied=0; break ;;
+                        esac
+                    done
+                    (( denied )) && BWRAP_ARGS+=(--ro-bind /dev/null "$match")
+                fi
+            done
         done
     done
 
@@ -343,6 +351,23 @@ cmd_setup() {
 }
 
 cmd_status() {
+    NBOX_EXTRA_DIRS=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --extra-dir)
+                [[ $# -ge 2 ]] || die "--extra-dir requires a path argument"
+                NBOX_EXTRA_DIRS+=("$(realpath "$2")")
+                shift 2
+                ;;
+            --extra-dir=*)
+                NBOX_EXTRA_DIRS+=("$(realpath "${1#--extra-dir=}")")
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
     build_bwrap
     local bwrap_bin
     bwrap_bin="$(command -v bwrap)"
@@ -354,7 +379,24 @@ cmd_status() {
 }
 
 cmd_run() {
-    [[ $# -ge 1 ]] || die "usage: nbox run <command> [args...]"
+    NBOX_EXTRA_DIRS=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --extra-dir)
+                [[ $# -ge 2 ]] || die "--extra-dir requires a path argument"
+                NBOX_EXTRA_DIRS+=("$(realpath "$2")")
+                shift 2
+                ;;
+            --extra-dir=*)
+                NBOX_EXTRA_DIRS+=("$(realpath "${1#--extra-dir=}")")
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    [[ $# -ge 1 ]] || die "usage: nbox run [--extra-dir DIR]... <command> [args...]"
     build_bwrap
     local bwrap_bin
     bwrap_bin="$(command -v bwrap)"
