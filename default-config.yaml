@@ -40,6 +40,10 @@ mounts:
   write:
     - ~/.local/share/claude
     - ~/.claude
+    - ~/.pi
+    - ~/pi
+    - ~/.tau
+    - ~/tau
     - ~/.claude.json
     - ~/.cache
 

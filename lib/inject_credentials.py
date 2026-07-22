@@ -44,5 +44,13 @@ class InjectCredentials:
             for header_name, header_value in self.mapping[host].items():
                 flow.request.headers[header_name] = header_value.strip()
 
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        """Forward server-sent events without buffering the response body."""
+        if flow.response is None:
+            return
+        content_type = flow.response.headers.get("content-type", "").lower()
+        if content_type.startswith("text/event-stream"):
+            flow.response.stream = True
+
 
 addons = [InjectCredentials()]
