@@ -72,6 +72,7 @@ env:
   # Forward from host (supports glob patterns like CUDA_*)
   forward:
     - TERM
+    - COLORTERM
     - LANG
     - LC_ALL
     - ANTHROPIC_API_KEY
