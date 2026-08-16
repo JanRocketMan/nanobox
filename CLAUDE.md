@@ -14,6 +14,8 @@ lib/
   parse_config.py              # YAML config → bash-evaluable arrays (eval'd by nbox)
   passenvs.py                  # ${VAR} template resolver → credentials.json
   inject_credentials.py        # mitmproxy addon that injects HTTP headers per-host
+  random_port.py               # print a free ephemeral loopback port (proxy port)
+  wait_port.py                 # wait until a loopback TCP port accepts connections
 default-config.yaml            # Template copied to ~/.config/nanobox/config.yaml on setup
 ```
 
@@ -36,8 +38,10 @@ The execution flow for `nbox run` is:
 
 1. `parse_config.py` reads `~/.config/nanobox/config.yaml` and outputs bash arrays (`RO_DIRS`, `RW_DIRS`, `DENY_PATTERNS`, `ENV_FORWARD`, etc.) that nbox `eval`s
 2. `build_bwrap()` assembles a `bwrap --clearenv` command from those arrays: namespace flags, mount layers, env vars, GPU devices, SSH agent socket, proxy config
-3. If `credentials.json` exists, mitmdump starts as a background proxy with `inject_credentials.py` as its addon
-4. `exec bwrap --clearenv [args] -- <command>` replaces the shell
+3. If `credentials.json` exists, a per-session proxy starts: mitmdump on a random loopback port with `inject_credentials.py` as its addon and a random auth token, plus a socat unix-socket bridge (host socket `0600` -> mitmdump TCP)
+4. `bwrap --clearenv [args] -- <sandbox command>` runs as a child; a wrapper inside the sandbox starts socat on `127.0.0.1:3128` forwarding to the bind-mounted socket. The EXIT trap tears the proxy session down
+
+The sandbox runs in an isolated network namespace: no direct network, HTTPS only through the enforced proxy.
 
 The mount layering order matters: tmpfs home -> ro system dirs -> rw user dirs -> rw project dir (+ extra dirs) -> ro overlays (`.venv*`) -> deny masks (`.env*` -> `/dev/null`). Later mounts override earlier ones for the same path. Extra dirs passed via `--extra-dir` receive the same treatment as the project dir (rw bind + ro overlays + deny masks).
 
@@ -47,9 +51,10 @@ The mount layering order matters: tmpfs home -> ro system dirs -> rw user dirs -
 
 ## Key conventions
 
+- Never inline Python into `nbox`; all Python helpers live in `lib/` and are invoked as `python3 "$NBOX_DIR/lib/<script>.py"` (stdout for machine output, stderr for human messages)
 - Python helpers output to stdout for machine consumption (bash arrays, JSON) and to stderr for human messages
-- Per-user ephemeral state lives in `$NBOX_RUNTIME` (`$XDG_RUNTIME_DIR` or `/tmp/nbox-$UID`): proxy PID/log, SSH agent socket
-- Proxy port is derived from UID (`18080 + uid % 10000`) so multiple users don't collide
+- Per-user ephemeral state lives in `$NBOX_RUNTIME` (`$XDG_RUNTIME_DIR` or `/tmp/nbox-$UID`)
+- Proxy sessions are per-run: random loopback port, random auth token, session dir `0700` under `$NBOX_RUNTIME/nbox/`, socket `0600`; the EXIT trap kills the process group and removes the session dir
 - Temporary files use `mktemp /tmp/nbox-*.XXXXXX` and are cleaned up via an EXIT trap
 - SSH private keys are never mounted; only the agent socket is forwarded
 - The `NBOX=1` env var is set inside the sandbox for detection

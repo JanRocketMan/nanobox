@@ -12,8 +12,29 @@ NBOX_RUNTIME="${XDG_RUNTIME_DIR:-/tmp/nbox-$(id -u)}"
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
 _CLEANUP_FILES=()
-_cleanup() { rm -f "${_CLEANUP_FILES[@]+"${_CLEANUP_FILES[@]}"}"; }
+_CLEANUP_PIDS=()
+_NBOX_SESSION_DIR=""
+_cleanup() {
+    rm -f "${_CLEANUP_FILES[@]+"${_CLEANUP_FILES[@]}"}"
+    for pid in "${_CLEANUP_PIDS[@]+"${_CLEANUP_PIDS[@]}"}"; do
+        # negative pids are process groups (setsid) - kill the whole group
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    # allow graceful shutdown, then force-kill stragglers
+    for pid in "${_CLEANUP_PIDS[@]+"${_CLEANUP_PIDS[@]}"}"; do
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+    if [[ -n "$_NBOX_SESSION_DIR" && "$_NBOX_SESSION_DIR" == "$NBOX_RUNTIME/nbox/"* ]]; then
+        rm -rf "$_NBOX_SESSION_DIR"
+    fi
+}
 trap _cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -68,7 +89,9 @@ parse_config() {
 build_bwrap() {
     require_config
     parse_config
-    ensure_ssh_agent
+    if [[ "${NBOX_STATUS_MODE:-0}" != 1 ]]; then
+        ensure_ssh_agent
+    fi
 
     local HOME_DIR="$HOME"
     local USER_NAME
@@ -80,7 +103,7 @@ build_bwrap() {
     local -a EXTRA_DIRS=("${NBOX_EXTRA_DIRS[@]+"${NBOX_EXTRA_DIRS[@]}"}")
 
     # Namespaces and lifecycle
-    BWRAP_ARGS+=(--unshare-all --share-net --die-with-parent)
+    BWRAP_ARGS+=(--unshare-all --die-with-parent)
 
     # Virtual filesystems
     BWRAP_ARGS+=(--proc /proc --dev /dev --tmpfs /tmp)
@@ -238,37 +261,71 @@ EOF
             BWRAP_ARGS+=(--setenv LD_LIBRARY_PATH "$LD_LIBRARY_PATH")
     fi
 
-    # ── Proxy auto-start ─────────────────────────────────────────────────────
+    # ── Proxy: per-session mitmdump + socat unix-socket bridge ──────────────
 
     PROXY_ENABLED=0
-    local proxy_port=$(( 18080 + $(id -u) % 10000 ))
-    local proxy_addr="127.0.0.1:$proxy_port"
-    mkdir -p "$NBOX_RUNTIME" && chmod 700 "$NBOX_RUNTIME"
-    local proxy_pid_file="$NBOX_RUNTIME/mitmdump.pid"
-    local proxy_log_file="$NBOX_RUNTIME/mitmdump.log"
-    local combined_ca="$HOME_DIR/.mitmproxy/combined-ca.pem"
+    local proxy_port proxy_token proxy_sock
+    local session_root="$NBOX_RUNTIME/nbox"
 
     if [[ -f "$CRED_OUTPUT" && -s "$CRED_OUTPUT" ]]; then
         if ! command -v mitmdump &>/dev/null; then
             warn "$CRED_OUTPUT found but mitmdump not installed (uv tool install mitmproxy)"
-        elif [[ ! -f "$combined_ca" ]]; then
-            warn "$CRED_OUTPUT found but combined CA missing: $combined_ca"
+        elif ! command -v socat &>/dev/null; then
+            warn "$CRED_OUTPUT found but socat not installed (see README: Installing socat)"
         else
             PROXY_ENABLED=1
-            if [[ -f "$proxy_pid_file" ]] && kill -0 "$(cat "$proxy_pid_file")" 2>/dev/null; then
-                echo "Proxy already running (PID: $(cat "$proxy_pid_file"))" >&2
+            mkdir -p "$session_root" && chmod 700 "$session_root"
+            # prune stale sessions older than one day
+            find "$session_root" -mindepth 1 -maxdepth 1 -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+            _NBOX_SESSION_DIR="$(mktemp -d "$session_root/session.XXXXXX")" \
+                || die "cannot create proxy session dir under $session_root"
+            chmod 700 "$_NBOX_SESSION_DIR"
+
+            proxy_port="$(python3 "$NBOX_DIR/lib/random_port.py")" \
+                || die "cannot pick a free proxy port"
+            proxy_token="$(openssl rand -hex 16 2>/dev/null \
+                || od -An -N16 -tx1 /dev/urandom | tr -d ' ')"
+            proxy_sock="$_NBOX_SESSION_DIR/proxy.sock"
+
+            # mitmdump: random loopback port, credential addon, auth token.
+            # setsid so the whole process group dies together on cleanup.
+            setsid mitmdump \
+                --listen-host 127.0.0.1 \
+                --listen-port "$proxy_port" \
+                --set confdir="$HOME_DIR/.mitmproxy" \
+                --proxyauth "nbox:$proxy_token" \
+                -s "$ADDON_SCRIPT" \
+                --quiet \
+                &>"$_NBOX_SESSION_DIR/mitmdump.log" &
+            _CLEANUP_PIDS+=(-$!)
+            echo "Started mitmdump proxy on 127.0.0.1:$proxy_port (PID: $!)" >&2
+
+            # Startup verification: wait until the port accepts connections
+            python3 "$NBOX_DIR/lib/wait_port.py" "$proxy_port" \
+                || die "mitmdump failed to start (see $_NBOX_SESSION_DIR/mitmdump.log)"
+
+            # CA bundle for the sandbox: system roots + the live mitmproxy CA.
+            # mitmproxy writes mitmproxy-ca-cert.pem into confdir on first run.
+            if [[ -f "$HOME_DIR/.mitmproxy/mitmproxy-ca-cert.pem" ]]; then
+                cat /etc/ssl/certs/ca-certificates.crt \
+                    "$HOME_DIR/.mitmproxy/mitmproxy-ca-cert.pem" \
+                    > "$_NBOX_SESSION_DIR/combined-ca.pem"
+                chmod 600 "$_NBOX_SESSION_DIR/combined-ca.pem"
             else
-                mitmdump \
-                    --listen-host 127.0.0.1 \
-                    --listen-port "$proxy_port" \
-                    --set confdir="$HOME_DIR/.mitmproxy" \
-                    -s "$ADDON_SCRIPT" \
-                    --quiet \
-                    &>"$proxy_log_file" &
-                echo $! > "$proxy_pid_file"
-                echo "Started mitmdump proxy on $proxy_addr (PID: $!)" >&2
-                sleep 1
+                warn "mitmproxy CA cert not found: $HOME_DIR/.mitmproxy/mitmproxy-ca-cert.pem"
             fi
+
+            # Host bridge: protected unix socket (0600) -> mitmproxy TCP
+            setsid socat \
+                UNIX-LISTEN:"$proxy_sock",fork,unlink-early,mode=600 \
+                TCP4:127.0.0.1:"$proxy_port" \
+                &>"$_NBOX_SESSION_DIR/bridge.log" &
+            _CLEANUP_PIDS+=(-$!)
+            for _ in $(seq 1 50); do
+                [[ -S "$proxy_sock" ]] && break
+                sleep 0.1
+            done
+            [[ -S "$proxy_sock" ]] || die "socat bridge failed to create $proxy_sock"
         fi
     fi
 
@@ -319,13 +376,24 @@ EOF
     # ── Environment: proxy ───────────────────────────────────────────────────
 
     if (( PROXY_ENABLED )); then
-        BWRAP_ARGS+=(--ro-bind "$combined_ca" "$combined_ca")
-        BWRAP_ARGS+=(--setenv HTTP_PROXY "http://$proxy_addr")
-        BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://$proxy_addr")
-        BWRAP_ARGS+=(--setenv SSL_CERT_FILE "$combined_ca")
-        BWRAP_ARGS+=(--setenv REQUESTS_CA_BUNDLE "$combined_ca")
-        BWRAP_ARGS+=(--setenv CURL_CA_BUNDLE "$combined_ca")
-        BWRAP_ARGS+=(--setenv NODE_EXTRA_CA_CERTS "$combined_ca")
+        # Bridge socket + CA bundle mounted into the sandbox
+        BWRAP_ARGS+=(--dir /run/nbox)
+        BWRAP_ARGS+=(--bind "$_NBOX_SESSION_DIR/proxy.sock" /run/nbox/proxy.sock)
+        if [[ -f "$_NBOX_SESSION_DIR/combined-ca.pem" ]]; then
+            BWRAP_ARGS+=(--ro-bind "$_NBOX_SESSION_DIR/combined-ca.pem" /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv SSL_CERT_FILE /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv REQUESTS_CA_BUNDLE /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv CURL_CA_BUNDLE /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv GIT_SSL_CAINFO /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv NODE_EXTRA_CA_CERTS /run/nbox/combined-ca.pem)
+            BWRAP_ARGS+=(--setenv PIP_CERT /run/nbox/combined-ca.pem)
+        fi
+        # Sandbox-side bridge listens on 127.0.0.1:3128 and forwards to the
+        # bind-mounted socket; the token in the URL authenticates with mitmdump
+        BWRAP_ARGS+=(--setenv HTTP_PROXY "http://nbox:$proxy_token@127.0.0.1:3128")
+        BWRAP_ARGS+=(--setenv HTTPS_PROXY "http://nbox:$proxy_token@127.0.0.1:3128")
+        BWRAP_ARGS+=(--setenv NO_PROXY "localhost,127.0.0.1,::1")
+        BWRAP_ARGS+=(--setenv no_proxy "localhost,127.0.0.1,::1")
     fi
 
     # ── Working directory ────────────────────────────────────────────────────
@@ -351,6 +419,7 @@ cmd_setup() {
 }
 
 cmd_status() {
+    NBOX_STATUS_MODE=1
     NBOX_EXTRA_DIRS=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -373,9 +442,13 @@ cmd_status() {
     bwrap_bin="$(command -v bwrap)"
     echo "$bwrap_bin --clearenv \\"
     for arg in "${BWRAP_ARGS[@]}"; do
-        printf '  %q \\\n' "$arg"
+        # redact credentials embedded in URLs (e.g. the proxy auth token)
+        printf '  %q \\\n' "$arg" | sed -E 's#//[^/@:]+:[^/@]+@#//***:***@#g'
     done
     echo "  -- <command> [args...]"
+    if (( PROXY_ENABLED )); then
+        echo "# proxy session: $(basename "$_NBOX_SESSION_DIR"), token redacted" >&2
+    fi
 }
 
 cmd_run() {
@@ -398,9 +471,19 @@ cmd_run() {
     done
     [[ $# -ge 1 ]] || die "usage: nbox run [--extra-dir DIR]... <command> [args...]"
     build_bwrap
+    if (( ! PROXY_ENABLED )); then
+        echo "note: proxy inactive (no credentials.json or missing tools); sandbox network is isolated with no egress" >&2
+    fi
     local bwrap_bin
     bwrap_bin="$(command -v bwrap)"
-    exec "$bwrap_bin" --clearenv "${BWRAP_ARGS[@]}" -- "$@"
+    local -a SANDBOX_CMD
+    if (( PROXY_ENABLED )); then
+        # sandbox-side bridge: 127.0.0.1:3128 -> bind-mounted unix socket
+        SANDBOX_CMD=(/bin/sh -c 'socat TCP4-LISTEN:3128,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:/run/nbox/proxy.sock 2>/tmp/nbox-bridge.log & exec "$@"' "nbox-bridge" "$@")
+    else
+        SANDBOX_CMD=("$@")
+    fi
+    "$bwrap_bin" --clearenv "${BWRAP_ARGS[@]}" -- "${SANDBOX_CMD[@]}"
 }
 
 cmd_proxy() {

@@ -10,6 +10,7 @@ Designed for running AI coding agents (Claude Code, etc.) on shared machines whe
 - **User namespaces enabled** — verify with `unshare --user true` (if it fails, ask your sysadmin to set `kernel.unprivileged_userns_clone=1`)
 - **python3 + PyYAML**
 - **mitmproxy** (optional, for credential injection)
+- **socat** (required for the proxy bridge, see [Installing socat](#installing-socat-no-root))
 
 ## What it does
 
@@ -123,7 +124,7 @@ env:
 | `$HOME` | Empty tmpfs + selective mounts |
 | SSH private keys | Hidden (agent socket forwarded) |
 | NVIDIA GPUs | Auto-detected, device nodes passed through |
-| Network | Shared with host (optionally proxied) |
+| Network | Isolated netns; HTTPS-only via per-session authenticated proxy |
 
 ## Comparison with alternatives
 
@@ -155,6 +156,26 @@ There are several tools for sandboxing AI coding agents and general-purpose comm
 **When to use Firejail:** You want to sandbox desktop applications or server processes on Linux with fine-grained seccomp + namespace controls. 900+ pre-built profiles for common apps. Not designed for AI agent workflows.
 
 **When to use CubeSandbox:** You need KVM-level isolation at platform scale with eBPF network policies and an E2B-compatible SDK, and you have the infrastructure to run KVM + supporting services.
+
+## Installing socat (no root)
+
+`socat` bridges the sandbox's isolated network namespace to the credential proxy on the host. The official socat site (`dest-unreach.org`) can be flaky, so build from the Debian mirror instead. Only `gcc` and `make` are needed - no flex, bison, or openssl headers:
+
+```bash
+cd /tmp
+curl -O https://deb.debian.org/debian/pool/main/s/socat/socat_1.7.4.4.orig.tar.gz
+# expected sha256: 0f8f4b9d5c60b8c53d17b60d79ababc4a0f51b3bb6d2bd3ae8a6a4b9d68f195e
+
+tar xzf socat_1.7.4.4.orig.tar.gz
+cd socat-1.7.4.4
+./configure --disable-openssl --disable-readline
+make -j"$(nproc)"
+cp socat ~/.local/bin/
+chmod +x ~/.local/bin/socat
+socat -V | head -2   # expect: socat version 1.7.4.4
+```
+
+The two configure flags disable optional SSL and readline support, which the bridge does not need (it only splices plain TCP and Unix sockets). If you have sudo, `sudo apt install socat` is the simpler equivalent.
 
 ## License
 
