@@ -80,6 +80,17 @@ def main() -> int:
             continue
         env_forward.append(str(entry))
 
+    allow_patterns = []
+    has_allow = 0
+    proxy = config.get("proxy", {})
+    allow = proxy.get("allow")
+    if allow is not None:
+        has_allow = 1
+        for entry in allow:
+            if entry is None:
+                continue
+            allow_patterns.append(str(entry))
+
     env_set_keys = []
     env_set_vals = []
     for key, val in env.get("set", {}).items():
@@ -99,6 +110,8 @@ def main() -> int:
     print(bash_array("RW_DIRS", rw_dirs))
     print(bash_array("DENY_PATTERNS", deny_patterns))
     print(bash_array("DENY_NEGATIONS", deny_negations))
+    print(f"NBOX_HAS_ALLOW={has_allow}")
+    print(bash_array("ALLOW_PATTERNS", allow_patterns))
     print(bash_array("ENV_FORWARD", env_forward))
     print(bash_array("ENV_SET_KEYS", env_set_keys))
     print(bash_array("ENV_SET_VALS", env_set_vals))

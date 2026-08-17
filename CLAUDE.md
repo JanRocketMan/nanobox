@@ -55,6 +55,7 @@ The mount layering order matters: tmpfs home -> ro system dirs -> rw user dirs -
 - Python helpers output to stdout for machine consumption (bash arrays, JSON) and to stderr for human messages
 - Per-user ephemeral state lives in `$NBOX_RUNTIME` (`$XDG_RUNTIME_DIR` or `/tmp/nbox-$UID`)
 - Proxy sessions are per-run: random loopback port, random auth token, session dir `0700` under `$NBOX_RUNTIME/nbox/`, socket `0600`; the EXIT trap kills the process group and removes the session dir
+- Never ship an egress-policy or proxy change that could block other running agents without first inventorying their required endpoints and confirming with the operator. A single host missing from a default-deny allow list breaks the live harness mid-run. Default to fail-open for hostnames unless the operator explicitly opts into strict mode; keep security-critical blocks (bare IPs, private/metadata ranges, SNI/Host mismatch, HTTPS-only credential injection) fail-closed
 - Temporary files use `mktemp /tmp/nbox-*.XXXXXX` and are cleaned up via an EXIT trap
 - SSH private keys are never mounted; only the agent socket is forwarded
 - The `NBOX=1` env var is set inside the sandbox for detection

@@ -287,13 +287,32 @@ EOF
                 || od -An -N16 -tx1 /dev/urandom | tr -d ' ')"
             proxy_sock="$_NBOX_SESSION_DIR/proxy.sock"
 
+            # Emit the per-session egress policy for the addon as JSON, so the
+            # mitmproxy environment does not need PyYAML. The path is always
+            # exported; when no proxy.allow is configured the file is absent
+            # and the addon fails open for hostnames.
+            local policy_file="$_NBOX_SESSION_DIR/policy.json"
+            if (( NBOX_HAS_ALLOW )); then
+                {
+                    printf '{"allow":['
+                    local _pat_sep=""
+                    for _pat in "${ALLOW_PATTERNS[@]}"; do
+                        printf '%s"%s"' "$_pat_sep" "$_pat"
+                        _pat_sep=","
+                    done
+                    printf ']}\n'
+                } > "$policy_file"
+                chmod 600 "$policy_file"
+            fi
+
             # mitmdump: random loopback port, credential addon, auth token.
             # setsid so the whole process group dies together on cleanup.
-            setsid mitmdump \
+            NBOX_POLICY="$policy_file" setsid mitmdump \
                 --listen-host 127.0.0.1 \
                 --listen-port "$proxy_port" \
                 --set confdir="$HOME_DIR/.mitmproxy" \
                 --proxyauth "nbox:$proxy_token" \
+                --set console_eventlog_verbosity=warn \
                 -s "$ADDON_SCRIPT" \
                 --quiet \
                 &>"$_NBOX_SESSION_DIR/mitmdump.log" &
@@ -441,9 +460,20 @@ cmd_status() {
     local bwrap_bin
     bwrap_bin="$(command -v bwrap)"
     echo "$bwrap_bin --clearenv \\"
+    local _status_prev="" _status_redact=0
     for arg in "${BWRAP_ARGS[@]}"; do
-        # redact credentials embedded in URLs (e.g. the proxy auth token)
-        printf '  %q \\\n' "$arg" | sed -E 's#//[^/@:]+:[^/@]+@#//***:***@#g'
+        if (( _status_redact )); then
+            printf '  %q \\\n' '***'
+            _status_redact=0
+        elif [[ "$_status_prev" == "--setenv" ]] \
+            && [[ "$arg" =~ ^[A-Za-z0-9_]*((API_KEY)|(TOKEN)|(SECRET)|(PASSWORD)|(PASS)|(CREDENTIAL)|(AUTH))[A-Za-z0-9_]*$ ]]; then
+            printf '  %q \\\n' "$arg"
+            _status_redact=1
+        else
+            # redact credentials embedded in URLs (e.g. the proxy auth token)
+            printf '  %q \\\n' "$arg" | sed -E 's#//[^/@:]+:[^/@]+@#//***:***@#g'
+        fi
+        _status_prev="$arg"
     done
     echo "  -- <command> [args...]"
     if (( PROXY_ENABLED )); then

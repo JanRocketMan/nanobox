@@ -70,13 +70,15 @@ path:
 # Environment variables
 env:
   # Forward from host (supports glob patterns like CUDA_*)
+  # Do NOT forward API keys or tokens here: they would reach the sandbox and
+  # appear in the bwrap command line. Inject them via the credential proxy
+  # instead (nbox proxy / nbox resolve, HTTPS only).
   forward:
     - TERM
     - COLORTERM
     - EDITOR
     - LANG
     - LC_ALL
-    - BRAVE_SEARCH_API_KEY
     - HF_HOME
     - HF_HUB_CACHE
     - CLAUDE_CODE_NO_FLICKER
@@ -93,3 +95,31 @@ env:
     SHELL: /bin/bash
     TORCHINDUCTOR_CACHE_DIR: ~/.cache/torch/inductor
     TRITON_CACHE_DIR: ~/.cache/triton
+
+# Proxy egress policy (default-deny when this section is present).
+# Hosts not listed here get HTTP 403 from the credential proxy. Exact names
+# and glob patterns are supported. Telemetry endpoints (sentry/statsig under
+# *.anthropic.com) and unrelated hosts are deliberately absent: enable them
+# explicitly only if a tool actually needs them.
+proxy:
+  allow:
+    - api.anthropic.com
+    - api.search.brave.com
+    - api.openai.com
+    - auth.openai.com
+    - chatgpt.com
+    - "*.chatgpt.com"
+    - opencode.ai
+    - "*.opencode.ai"
+    - api.studio.nebius.ai
+    - claude.ai
+    - "*.claude.ai"
+    - gitlab.com
+    - "*.gitlab.com"
+    - github.com
+    - "*.github.com"
+    - "*.githubusercontent.com"
+    - huggingface.co
+    - "*.huggingface.co"
+    - pypi.org
+    - files.pythonhosted.org

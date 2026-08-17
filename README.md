@@ -78,6 +78,23 @@ nbox resolve .env .env.prod     # layer .env files (later wins)
 nbox resolve --check .env       # dry-run
 ```
 
+### Egress policy and API keys
+
+Do not forward API keys or tokens in `env.forward` - they would reach the sandbox and appear in the `bwrap` command line. Inject them instead through the credential proxy. For example, to give the agent Brave Search access without it ever seeing the key:
+
+```json
+// ~/.config/nanobox/credentials.json (edited with nbox proxy, resolved with nbox resolve)
+{ "api.search.brave.com": { "X-Subscription-Token": "${BRAVE_SEARCH_API_KEY}" } }
+```
+
+```bash
+BRAVE_SEARCH_API_KEY=... nbox resolve   # resolve once, with the key in the host env
+```
+
+The proxy injects the header over HTTPS only. If a tool refuses to start without the variable set, ship a dummy sentinel value in the sandbox and let the proxy overwrite it.
+
+Outbound `proxy.allow` is a default-deny list when present: hosts not listed get HTTP 403 at CONNECT time, before any upstream connection. Telemetry and unrelated hosts (e.g. `sentry.anthropic.com`, `statsig.anthropic.com`, `lucide.dev`) are deliberately absent - add them only if a tool really needs them. Removing the `proxy.allow` section restores fail-open behavior for hostnames; the always-on blocks (bare IPs, private/metadata ranges, SNI mismatch, HTTPS-only injection) stay.
+
 ## Config format
 
 The config at `~/.config/nanobox/config.yaml` has four sections:
@@ -104,11 +121,15 @@ path:           # PATH inside the sandbox (in order)
 env:
   forward:      # Forward from host (supports globs like CUDA_*)
     - TERM
-    - ANTHROPIC_API_KEY
     - "CUDA_*"
 
   set:           # Set explicitly
     SHELL: /bin/bash
+
+proxy:
+  allow:        # Default-deny egress allow list (globs supported)
+    - api.anthropic.com
+    - "*.github.com"
 ```
 
 **Path syntax:** `/absolute`, `~/relative` (expands to `$HOME`), or bare glob patterns matched against project directory entries.
