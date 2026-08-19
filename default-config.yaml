@@ -105,6 +105,7 @@ proxy:
   allow:
     - api.anthropic.com
     - api.search.brave.com
+    - api.parallel.ai
     - api.openai.com
     - auth.openai.com
     - chatgpt.com
