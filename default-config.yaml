@@ -95,6 +95,7 @@ env:
     SHELL: /bin/bash
     TORCHINDUCTOR_CACHE_DIR: ~/.cache/torch/inductor
     TRITON_CACHE_DIR: ~/.cache/triton
+    PARALLEL_SEARCH_API_KEY: nbox-proxy-injected
 
 # Proxy egress policy (default-deny when this section is present).
 # Hosts not listed here get HTTP 403 from the credential proxy. Exact names

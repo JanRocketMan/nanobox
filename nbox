@@ -7,7 +7,9 @@ CONFIG_FILE="$CONFIG_DIR/config.yaml"
 CRED_TEMPLATE="$CONFIG_DIR/credentials.template.json"
 CRED_OUTPUT="$CONFIG_DIR/credentials.json"
 ADDON_SCRIPT="$NBOX_DIR/lib/inject_credentials.py"
-NBOX_RUNTIME="${XDG_RUNTIME_DIR:-/tmp/nbox-$(id -u)}"
+# $XDG_RUNTIME_DIR can leak from a login node into a Slurm job where it does not exist
+NBOX_RUNTIME="/tmp/nbox-$(id -u)"
+[[ -d "${XDG_RUNTIME_DIR:-}" && -w "${XDG_RUNTIME_DIR:-}" ]] && NBOX_RUNTIME="$XDG_RUNTIME_DIR"
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
