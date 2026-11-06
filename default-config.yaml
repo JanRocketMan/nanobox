@@ -96,6 +96,8 @@ env:
     TORCHINDUCTOR_CACHE_DIR: ~/.cache/torch/inductor
     TRITON_CACHE_DIR: ~/.cache/triton
     PARALLEL_SEARCH_API_KEY: nbox-proxy-injected
+    EXA_API_KEY: nbox-proxy-injected
+    TAU_SEARCH_PROVIDER: exa
 
 # Proxy egress policy (default-deny when this section is present).
 # Hosts not listed here get HTTP 403 from the credential proxy. Exact names
@@ -105,6 +107,8 @@ env:
 proxy:
   allow:
     - api.anthropic.com
+    # Claude Code OAuth token refresh and /login code exchange
+    - platform.claude.com
     - api.search.brave.com
     - api.parallel.ai
     - api.openai.com
@@ -116,6 +120,7 @@ proxy:
     - api.studio.nebius.ai
     - claude.ai
     - "*.claude.ai"
+    - "*.claudeusercontent.com"
     - gitlab.com
     - "*.gitlab.com"
     - github.com
@@ -125,3 +130,6 @@ proxy:
     - "*.huggingface.co"
     - pypi.org
     - files.pythonhosted.org
+    - nvidia.com
+    - "*.nvidia.com"
+    - api.exa.ai
