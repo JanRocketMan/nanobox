@@ -79,6 +79,7 @@ env:
     - EDITOR
     - LANG
     - LC_ALL
+    - TZ
     - HF_HOME
     - HF_HUB_CACHE
     - CLAUDE_CODE_NO_FLICKER
